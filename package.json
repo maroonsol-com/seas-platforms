@@ -1,0 +1,19 @@
+{
+  "name": "saas-platform",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.22.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:admin": "pnpm --filter @saas/admin dev",
+    "dev:clinic": "pnpm --filter @saas/clinic-client dev",
+    "build:admin": "pnpm --filter @saas/admin build",
+    "build:clinic": "pnpm --filter @saas/clinic-client build",
+    "build": "pnpm --filter @saas/admin --filter @saas/clinic-client build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "db:boundaries": "node scripts/check-database-boundaries.mjs"
+  }
+}

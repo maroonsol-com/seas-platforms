@@ -1,0 +1,19 @@
+{
+  "name": "@saas/auth-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./otp": "./src/otp/index.ts",
+    "./security": "./src/security/index.ts",
+    "./utilities": "./src/utilities/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5"
+  }
+}

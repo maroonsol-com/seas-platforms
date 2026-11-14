@@ -1,0 +1,12 @@
+packages:
+  - "admin"
+  - "clinic-client"
+  - "packages/*"
+
+# Future product applications are added here as new root-level folders,
+# for example "school-client" or "retail-client". Do not add them until
+# that product is requested.
+
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver

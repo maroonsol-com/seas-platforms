@@ -19,9 +19,9 @@ Catalogue prices and tax rates are read from the Clinic database when a draft is
 
 A credit note reduces what the patient still owes. It does not rewrite the original invoice total, and it is not a cash refund. Cash changes only when a payment or a refund is recorded. `balance = total - amount_paid - credit_total`. Outstanding reports sum the positive balances. A negative balance is customer credit. Issued credits cannot exceed the original total. Several credit notes are allowed until that cap. A full credit against an unpaid invoice stays finalized, because no cash was collected.
 
-These modules are not built:
+Owner invitation links open `/invite` on the Clinic origin. The page asks for the invited email, sends the existing one-time code, and accepts the invitation only after that code is verified. The token is stored as a hash in the Admin database. Acceptance does not grant access to any other clinic. `ADMIN_APP_URL` must be the Admin origin so Clinic can validate the invitation. These modules are not built:
 
-- Invitation acceptance
+- Staff invitation acceptance beyond the owner link
 - Appointments, doctors, and staff screens
 - Consultations, vitals, and prescriptions screens
 - Inventory quantity changes, purchases, and expenses
@@ -81,6 +81,7 @@ Required in `clinic-client/.env` and, later, in the Clinic Vercel project:
 | `AUTH_SECRET` | Clinic session and OTP secret. Must differ from Admin |
 | `APP_URL` | Public Clinic origin, `http://localhost:3001` locally |
 | `CLINIC_PROVISIONING_SECRET` | Same value as Admin. Verifies provisioning and entitlement requests |
+| `ADMIN_APP_URL` | Admin origin used to validate owner invitations |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | Email delivery for clinic sign-in codes |
 
 The same variable names are used in Admin. Each Vercel project has its own values.

@@ -81,6 +81,7 @@ DATABASE_URL_UNPOOLED=<Clinic direct Neon URL>
 AUTH_SECRET=<unique Clinic secret>
 APP_URL=https://clinic.yourdomain.com
 CLINIC_PROVISIONING_SECRET=<same value as the Admin project>
+ADMIN_APP_URL=https://admin.yourdomain.com
 SMTP_HOST=
 SMTP_PORT=
 SMTP_USER=
@@ -103,7 +104,7 @@ When the real domain is known:
 
 1. Attach `admin.yourdomain.com` to project `saas-admin` and `clinic.yourdomain.com` to project `clinic-management`.
 2. Set Admin `APP_URL` and Clinic `APP_URL` to the `https://` origins that Vercel is serving.
-3. Set Admin `CLINIC_APP_URL` to the Clinic origin. Owner invitation links are `{clinic origin}/invite?token=...`. Clinic does not yet have an invitation acceptance page, so the link is not a working sign-up flow.
+3. Set Admin `CLINIC_APP_URL` to the Clinic origin. Owner invitation links are `{clinic origin}/invite?token=...`. Clinic accepts that link at `/invite`. Clinic also needs `ADMIN_APP_URL` set to the Admin origin and the same `CLINIC_PROVISIONING_SECRET` as Admin.
 4. Use HTTPS. Do not invent DNS records. Do not treat a domain as connected until Vercel reports it is verified.
 
 The PHP storage host is a later subdomain such as `files.yourdomain.com`. It is not part of this deployment. Invoice PDFs are generated in the Clinic application and do not need the PHP service.

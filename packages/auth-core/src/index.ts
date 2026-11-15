@@ -10,6 +10,7 @@ export {
 export {
   SERVICE_SIGNATURE_HEADER,
   SERVICE_TIMESTAMP_HEADER,
+  requestOriginAllowed,
   sessionCookieName,
   sessionCookieOptions,
   signServiceRequest,

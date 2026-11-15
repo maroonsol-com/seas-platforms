@@ -216,7 +216,7 @@ async function createOwnerInvitation(
 
   const token = randomBytes(32).toString("base64url");
   const tokenHash = createHash("sha256").update(token).digest("base64url");
-  const clinicBase = context.product.productUrl?.replace(/\/$/, "");
+  const clinicBase = (context.product.productUrl || process.env.CLINIC_APP_URL || "").trim().replace(/\/$/, "");
   const link = clinicBase ? `${clinicBase}/invite?token=${token}` : null;
   let sentAt: Date | null = null;
   if (link) {

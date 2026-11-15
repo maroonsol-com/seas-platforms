@@ -68,11 +68,11 @@ Financial, clinical, audit, and stock rows are protected by database triggers. D
 
 ## Still outstanding
 
-- CSRF tokens on cookie-authenticated form posts. SameSite=Lax is in place.
+- CSRF tokens on cookie-authenticated form posts. Session cookies remain `HttpOnly` and `SameSite=Lax`. State-changing browser requests are also rejected unless their `Origin` or `Referer` matches that application's `APP_URL`. Signed `/api/internal` requests are excluded from the origin check and keep their HMAC authentication.
 - File upload validation for a storage service. Clinic logos are PNG or JPEG data URLs on `business_settings`, limited to 250,000 characters. The PHP storage service is not connected.
 - Backups and monitoring.
 - Inbox confirmation of email. On 12 November 2026 the Admin SMTP server and the Clinic SMTP server each accepted one configuration-check message. The mailbox was not read, and no one-time code or invitation was sent. Sign-in verification in the test suites still uses a test sender.
 - `CLINIC_PROVISIONING_SECRET` is not in the environment files, so a running Admin server cannot call Clinic until it is set to the same value in both applications.
-- Owner invitation links point at `/invite` on the Clinic origin. Clinic has no page that accepts that link.
+- Owner invitation links point at `/invite` on the Clinic origin. Acceptance calls the Admin invitation record. Clinic `ADMIN_APP_URL` must be set to the Admin origin before that call can succeed.
 
 Admin mutations check a platform permission. Clinic subscription access is decided from `subscription_snapshots` on the Clinic server. Input validation for shared identifiers uses Zod. Database access goes through Drizzle.

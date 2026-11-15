@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 
 import { authorize, countOtherActiveSuperAdmins, writeAudit } from "./audit";
+import { canAssignRole } from "./invitations";
 import { sendEmail } from "./mail";
 import { PAGE_SIZE, SUPER_ADMIN_ROLE } from "./constants";
 import { AdminError } from "./errors";
@@ -68,6 +69,16 @@ export async function inviteAdministrator(input: {
 }) {
   await authorize(input.actorId, "administrators.write");
   const administratorId = await withAdminTransaction(async (tx) => {
+    const [role] = await tx.select({ name: platformRoles.name }).from(platformRoles).where(eq(platformRoles.id, input.roleId)).limit(1);
+    if (!role) throw new AdminError("The role could not be found.");
+    const actorRoles = await tx
+      .select({ name: platformRoles.name })
+      .from(platformAdministratorRoles)
+      .innerJoin(platformRoles, eq(platformRoles.id, platformAdministratorRoles.roleId))
+      .where(eq(platformAdministratorRoles.administratorId, input.actorId));
+    if (!canAssignRole(actorRoles.map((item) => item.name), role.name)) {
+      throw new AdminError("Only a Super Admin can assign the Super Admin role.");
+    }
     const [existing] = await tx
       .select({ id: platformAdministrators.id })
       .from(platformAdministrators)

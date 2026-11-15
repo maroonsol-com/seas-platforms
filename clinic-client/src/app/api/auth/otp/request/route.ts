@@ -10,10 +10,10 @@ export async function POST(request: Request) {
   }
   const result = await requestClinicOtp(email);
   if (result === "not_configured") {
-    return NextResponse.json({ message: "Email delivery is not configured. A sign-in code cannot be sent until SMTP credentials are added." });
+    return NextResponse.json({ status: "not_configured", message: "Email delivery is not configured. A sign-in code cannot be sent until SMTP credentials are added." });
   }
   if (result === "delivery_failed") {
-    return NextResponse.json({ message: "The sign-in code could not be sent." }, { status: 503 });
+    return NextResponse.json({ status: "delivery_failed", message: "The sign-in code could not be sent." }, { status: 503 });
   }
-  return NextResponse.json({ message: "If this address is authorized, a sign-in code was sent." });
+  return NextResponse.json({ status: "accepted", message: "If this address is authorized, a sign-in code was sent." });
 }

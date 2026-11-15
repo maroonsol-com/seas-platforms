@@ -49,9 +49,9 @@ Pagination controls and the credit-note balance labels were not walked in a brow
 
 - Connect GitHub and Vercel, then create `saas-admin` and `clinic-management` with the settings in `docs/DEPLOYMENT.md`.
 - Set the matching provisioning secret and the Clinic application URL before provisioning from the deployed Admin app.
-- Confirm a real mailbox receives OTP and invitation mail.
-- Clinic invitation acceptance at `/invite` is not built.
-- CSRF protection is `SameSite=Lax`.
+- Confirm a real mailbox receives OTP and invitation mail. OTP delivery was confirmed by the user before this pass. This pass did not open a mailbox and did not send a new invitation.
+- Set `CLINIC_APP_URL` on Admin, `ADMIN_APP_URL` on Clinic, and the same `CLINIC_PROVISIONING_SECRET` on both before an owner invitation can be accepted.
+- Production `APP_URL` for each application must be the origin the browser uses. Origin checks reject state-changing requests from any other origin.
 - PHP storage is not configured. Invoice PDFs do not need it.
 
 ### Next phase

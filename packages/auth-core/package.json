@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./otp": "./src/otp/index.ts",
+    "./origin": "./src/security/origin.ts",
     "./security": "./src/security/index.ts",
     "./utilities": "./src/utilities/index.ts"
   },

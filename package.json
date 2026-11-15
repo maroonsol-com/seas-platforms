@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=20"
   },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
   "scripts": {
     "dev:admin": "pnpm --filter @saas/admin dev",
     "dev:clinic": "pnpm --filter @saas/clinic-client dev",
@@ -14,6 +17,7 @@
     "build": "pnpm --filter @saas/admin --filter @saas/clinic-client build",
     "typecheck": "pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint",
-    "db:boundaries": "node scripts/check-database-boundaries.mjs"
+    "db:boundaries": "node scripts/check-database-boundaries.mjs",
+    "test:migrations": "node --test --test-concurrency=1 scripts/migration-runner.test.mjs"
   }
 }

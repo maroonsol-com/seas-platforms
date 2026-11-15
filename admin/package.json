@@ -9,9 +9,12 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "db:generate": "node scripts/drizzle.mjs generate",
-    "db:migrate": "node scripts/drizzle.mjs migrate",
+    "db:check": "node scripts/database.mjs check && node scripts/drizzle.mjs check",
+    "db:migrate": "node scripts/database.mjs migrate",
+    "db:status": "node scripts/database.mjs status",
+    "db:verify": "node scripts/database.mjs verify",
+    "db:deploy": "node scripts/database.mjs deploy",
     "db:studio": "node scripts/drizzle.mjs studio",
-    "db:check": "node scripts/drizzle.mjs check",
     "bootstrap": "tsx scripts/bootstrap-super-admin.ts"
   },
   "dependencies": {

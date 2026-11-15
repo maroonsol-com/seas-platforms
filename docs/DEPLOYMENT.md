@@ -38,7 +38,7 @@ Create one Vercel project per application from the same Git repository. Do not d
 6. Node.js 20.9 or newer. Local production builds used Node.js 24.
 7. Set `ENABLE_EXPERIMENTAL_COREPACK` to `1` so Vercel uses the pinned pnpm 10.22.0 from `packageManager`.
 8. Do not set an Output Directory override. Next.js on Vercel serves the build itself.
-9. Do not add a build command that runs `db:migrate`, `db:push`, or `bootstrap`.
+9. Set the build command to `pnpm db:deploy` for each project. Do not use `db:push` or `bootstrap`. The deploy command migrates that project's database and then runs `next build`. See `docs/DATABASE_MIGRATIONS.md`.
 
 If an install cannot see the workspace, override only the install command:
 
@@ -60,6 +60,8 @@ Admin project `saas-admin`:
 APP_DATABASE_TARGET=admin
 DATABASE_URL=<Admin pooled Neon URL>
 DATABASE_URL_UNPOOLED=<Admin direct Neon URL>
+DATABASE_NAME=<database name from the Neon connection details>
+NEON_ENDPOINT_ID=<endpoint id from the direct host, without -pooler>
 AUTH_SECRET=<unique Admin secret>
 APP_URL=https://admin.yourdomain.com
 CLINIC_APP_URL=https://clinic.yourdomain.com
@@ -78,6 +80,8 @@ Clinic project `clinic-management`:
 APP_DATABASE_TARGET=clinic
 DATABASE_URL=<Clinic pooled Neon URL>
 DATABASE_URL_UNPOOLED=<Clinic direct Neon URL>
+DATABASE_NAME=<database name from the Neon connection details>
+NEON_ENDPOINT_ID=<a different endpoint id from the Admin project>
 AUTH_SECRET=<unique Clinic secret>
 APP_URL=https://clinic.yourdomain.com
 CLINIC_PROVISIONING_SECRET=<same value as the Admin project>
@@ -90,7 +94,7 @@ SMTP_FROM=
 ENABLE_EXPERIMENTAL_COREPACK=1
 ```
 
-`DATABASE_URL` is the runtime connection. `DATABASE_URL_UNPOOLED` is the direct Neon URL used by `db:migrate`. Migrations do not run during the Vercel build, so the unpooled URL is still required on the project for the separate migration command and so the application guard can confirm the target.
+`DATABASE_URL` is the pooled runtime connection. `DATABASE_URL_UNPOOLED` is the direct connection used by `db:migrate` and `db:deploy`. The deploy command does not fall back to the pooled URL. `DATABASE_NAME` and `NEON_ENDPOINT_ID` are the non-secret identity checks described in `docs/DATABASE_MIGRATIONS.md`. They are not set in the local files yet. Do not put either connection string in a `NEXT_PUBLIC_` variable.
 
 `APP_URL` is the public origin for logout redirects, OTP mail that names the sign-in page, and the administrator invitation link. Cookie `Secure` is set when `NODE_ENV` is `production`, which Vercel sets. Session cookies are `HttpOnly` and `SameSite=Lax`.
 
@@ -129,16 +133,16 @@ The first real commit has no parent. The script then exits 1 and builds the proj
 
 ## Production migrations
 
-Do not run migrations during the Vercel build. Do not use `db:push` against production. Do not reset either database. Do not rerun an already applied migration.
-
-After a reviewed migration is generated, apply it explicitly from that application's directory with that application's direct Neon URL:
+The Vercel build command for each project is `pnpm db:deploy`. It migrates only that project's direct database and then builds Next.js. A migration failure stops the build. Do not use `db:push` against production. Do not reset either database. Do not rerun an already applied migration. Do not roll back an applied migration from the deployment script.
 
 ```bash
-pnpm --filter @saas/admin db:migrate
-pnpm --filter @saas/clinic-client db:migrate
+pnpm --filter @saas/admin db:deploy
+pnpm --filter @saas/clinic-client db:deploy
 ```
 
-Admin deployment must not migrate the Clinic database, and the reverse is also true. Each command reads its own `.env` and refuses a target that does not match `APP_DATABASE_TARGET`.
+Admin deployment must not migrate the Clinic database, and the reverse is also true. Each command reads its own environment and refuses a target that does not match `APP_DATABASE_TARGET`. The full procedure, lock, and review rules are in `docs/DATABASE_MIGRATIONS.md`.
+
+Do not run `db:deploy` against the current Neon databases until `DATABASE_NAME` and `NEON_ENDPOINT_ID` are set and the pending-migration report has been approved. The local files do not have those identity variables yet.
 
 Applied histories:
 

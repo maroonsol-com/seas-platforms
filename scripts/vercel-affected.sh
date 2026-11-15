@@ -30,7 +30,7 @@ if git diff --quiet "HEAD^" HEAD -- \
   pnpm-lock.yaml \
   pnpm-workspace.yaml \
   package.json \
-  scripts/vercel-affected.sh
+  scripts
 then
   echo "No changes affecting ${APP_DIR}. Skipping the build."
   exit 0

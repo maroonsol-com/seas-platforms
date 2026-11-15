@@ -59,15 +59,25 @@ function createDatabase(name) {
   execFileSync("createdb", ["-h", "127.0.0.1", "-p", String(port), "-U", "postgres", name], { stdio: "ignore" });
 }
 
-function envFor(name, target) {
+function envFor(name, target, identity = `${target}-development`) {
   const url = `postgresql://postgres@127.0.0.1:${port}/${name}`;
   return {
     APP_DATABASE_TARGET: target,
     DATABASE_URL: url,
     DATABASE_URL_UNPOOLED: url,
     DATABASE_NAME: name,
-    NEON_ENDPOINT_ID: "local",
+    DATABASE_IDENTITY: identity,
+    DATABASE_IDENTITY_CONFIRM: identity,
   };
+}
+
+async function claim(name, target, identity = `${target}-development`) {
+  await runDatabaseCommand({
+    application: target,
+    migrationsFolder: path.join(root, target === "admin" ? "admin/drizzle" : "clinic-client/drizzle"),
+    env: envFor(name, target, identity),
+    command: "identify",
+  });
 }
 
 async function query(name, sql, params = []) {
@@ -120,8 +130,11 @@ test("journal order and destructive classification", () => {
   assert.equal(clinic.length, 12);
   assert.equal(clinic.at(-1).tag, "0011_sad_proudstar");
   for (const entry of [...admin, ...clinic]) {
+    assert.equal(entry.hash.length, 64, entry.tag);
     assert.deepEqual(migrationRisks(entry.sql), [], entry.tag);
   }
+  assert.deepEqual(readJournal(path.join(root, "admin/drizzle")).map((entry) => entry.hash), admin.map((entry) => entry.hash));
+  assert.deepEqual(readJournal(path.join(root, "clinic-client/drizzle")).map((entry) => entry.hash), clinic.map((entry) => entry.hash));
   assert.deepEqual(migrationRisks("CREATE TABLE kept (id int);\n"), []);
   assert.deepEqual(migrationRisks('ALTER TABLE "invoices" DROP COLUMN "total";\n'), ["DROP COLUMN"]);
   assert.deepEqual(
@@ -130,33 +143,30 @@ test("journal order and destructive classification", () => {
   );
 });
 
-test("connection identity rejects a pooler migration URL and a swapped pair", () => {
+test("connection identity rejects a pooled direct URL and a different database name", () => {
   const direct = connectionIdentity("postgresql://user:secret@ep-admin.region.aws.neon.tech/admin_db");
   const pooled = connectionIdentity("postgresql://user:secret@ep-admin-pooler.region.aws.neon.tech/admin_db");
-  assert.equal(direct.endpointId, "ep-admin");
-  assert.equal(pooled.endpointId, direct.endpointId);
+  assert.equal(direct.pooled, false);
   assert.equal(pooled.pooled, true);
+  assert.equal(direct.databaseName, "admin_db");
   assert.doesNotThrow(() => assertConnectionPair({
     DATABASE_URL: "postgresql://user:secret@ep-admin-pooler.region.aws.neon.tech/admin_db",
-    DATABASE_URL_UNPOOLED: "postgresql://user:secret@ep-admin.region.aws.neon.tech/admin_db",
+    DATABASE_URL_UNPOOLED: "postgresql://user:secret@ep-other.region.aws.neon.tech/admin_db",
     DATABASE_NAME: "admin_db",
-    NEON_ENDPOINT_ID: "ep-admin",
   }));
   assert.throws(
     () => assertConnectionPair({
-      DATABASE_URL: "postgresql://user:secret@ep-clinic-pooler.region.aws.neon.tech/admin_db",
-      DATABASE_URL_UNPOOLED: "postgresql://user:secret@ep-admin.region.aws.neon.tech/admin_db",
+      DATABASE_URL: "postgresql://user:secret@ep-admin-pooler.region.aws.neon.tech/admin_db",
+      DATABASE_URL_UNPOOLED: "postgresql://user:secret@ep-admin.region.aws.neon.tech/other_db",
       DATABASE_NAME: "admin_db",
-      NEON_ENDPOINT_ID: "ep-admin",
     }),
-    /do not select the same database/,
+    /DATABASE_NAME does not match/,
   );
   assert.throws(
     () => assertConnectionPair({
       DATABASE_URL: "postgresql://user:secret@ep-admin-pooler.region.aws.neon.tech/admin_db",
       DATABASE_URL_UNPOOLED: "postgresql://user:secret@ep-admin-pooler.region.aws.neon.tech/admin_db",
       DATABASE_NAME: "admin_db",
-      NEON_ENDPOINT_ID: "ep-admin",
     }),
     /pooler host/,
   );
@@ -172,6 +182,7 @@ test("fresh, repeated, and partial migrations keep existing rows", async () => {
     migrationsFolder: first,
     env: envFor("partial_admin", "admin"),
   };
+  await claim("partial_admin", "admin");
   await runDatabaseCommand({ ...base, command: "migrate" });
   await runDatabaseCommand({ ...base, command: "migrate" });
   await query("partial_admin", "INSERT INTO kept (id, note) VALUES (1, 'preserved')");
@@ -191,6 +202,7 @@ test("a failed migration stops and does not record itself", async () => {
   const folder = mkdtempSync(path.join(tmpdir(), "saas-journal-"));
   writeMigration(folder, "0000_ok", 10, "CREATE TABLE kept (id integer PRIMARY KEY);\n");
   writeMigration(folder, "0001_bad", 20, "SELECT 1 / 0;\n");
+  await claim("failed_admin", "admin");
   await assert.rejects(
     () => runDatabaseCommand({
       application: "admin",
@@ -239,17 +251,26 @@ test("the wrong target, identity, or missing direct URL stops before migration",
     () => runDatabaseCommand({ application: "admin", migrationsFolder: folder, env: wrong, command: "migrate" }),
     /DATABASE_NAME does not match/,
   );
-  const remote = envFor("guard_admin", "admin");
-  remote.NEON_ENDPOINT_ID = "ep-other";
+  const missingIdentity = envFor("guard_admin", "admin");
+  delete missingIdentity.DATABASE_IDENTITY;
   await assert.rejects(
-    () => runDatabaseCommand({ application: "admin", migrationsFolder: folder, env: remote, command: "migrate" }),
-    /NEON_ENDPOINT_ID=local/,
+    () => runDatabaseCommand({ application: "admin", migrationsFolder: folder, env: missingIdentity, command: "migrate" }),
+    /DATABASE_IDENTITY is missing/,
   );
+  const otherApplication = envFor("guard_admin", "admin", "clinic-production");
+  await assert.rejects(
+    () => runDatabaseCommand({ application: "admin", migrationsFolder: folder, env: otherApplication, command: "migrate" }),
+    /not valid for the admin application/,
+  );
+  const untouched = await query("guard_admin", "SELECT to_regclass('public.platform_administrators') AS name");
+  assert.equal(untouched.rows[0].name, null);
 });
 
 test("admin and clinic runners reject each other's database", async () => {
   createDatabase("real_admin");
   createDatabase("real_clinic");
+  await claim("real_admin", "admin", "admin-development");
+  await claim("real_clinic", "clinic", "clinic-development");
   await runDatabaseCommand({
     application: "admin",
     migrationsFolder: path.join(root, "admin/drizzle"),
@@ -335,6 +356,7 @@ test("destructive SQL requires an explicit tag approval", async () => {
     env: envFor("danger_admin", "admin"),
     command: "migrate",
   };
+  await claim("danger_admin", "admin");
   await assert.rejects(() => runDatabaseCommand(options), /0001_drop requires review/);
   const stillThere = await query("danger_admin", "SELECT to_regclass('public.kept') AS name");
   assert.equal(stillThere.rows[0].name, "kept");
@@ -354,6 +376,7 @@ test("concurrent migrators apply the pending migration once", async () => {
     env: envFor("locked_admin", "admin"),
     command: "migrate",
   };
+  await claim("locked_admin", "admin");
   await Promise.all([runDatabaseCommand(options), runDatabaseCommand(options)]);
   const count = await query("locked_admin", "SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations");
   assert.equal(count.rows[0].count, 1);
@@ -375,4 +398,145 @@ test("a failed migration does not run the build", async () => {
     /APP_DATABASE_TARGET/,
   );
   assert.equal(built, false);
+});
+
+test("configured identities are accepted and a mismatch applies no SQL", async () => {
+  const cases = [
+    ["admin_development", "admin", "admin-development"],
+    ["admin_production", "admin", "admin-production"],
+    ["clinic_development", "clinic", "clinic-development"],
+    ["clinic_production", "clinic", "clinic-production"],
+  ];
+  const folder = mkdtempSync(path.join(tmpdir(), "saas-journal-"));
+  writeMigration(folder, "0000_create", 10, "CREATE TABLE kept (id integer PRIMARY KEY);\n");
+  for (const [name, target, identity] of cases) {
+    createDatabase(name);
+    await claim(name, target, identity);
+    await runDatabaseCommand({
+      application: target,
+      migrationsFolder: folder,
+      env: envFor(name, target, identity),
+      command: "migrate",
+    });
+    const marker = await query(name, "SELECT identity FROM drizzle.database_identity");
+    assert.equal(marker.rows[0].identity, identity);
+    const table = await query(name, "SELECT to_regclass('public.kept') AS name");
+    assert.equal(table.rows[0].name, "kept");
+  }
+
+  await assert.rejects(
+    () => runDatabaseCommand({
+      application: "admin",
+      migrationsFolder: folder,
+      env: envFor("admin_development", "admin", "admin-production"),
+      command: "migrate",
+    }),
+    /does not match DATABASE_IDENTITY/,
+  );
+  await assert.rejects(
+    () => runDatabaseCommand({
+      application: "admin",
+      migrationsFolder: folder,
+      env: envFor("admin_production", "admin", "admin-development"),
+      command: "migrate",
+    }),
+    /does not match DATABASE_IDENTITY/,
+  );
+  const unchanged = await query("admin_development", "SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations");
+  assert.equal(unchanged.rows[0].count, 1);
+  const productionMarker = await query("admin_production", "SELECT identity FROM drizzle.database_identity");
+  assert.equal(productionMarker.rows[0].identity, "admin-production");
+
+  createDatabase("wrong_identity");
+  await claim("wrong_identity", "clinic", "clinic-development");
+  await assert.rejects(
+    () => runDatabaseCommand({
+      application: "admin",
+      migrationsFolder: folder,
+      env: envFor("wrong_identity", "admin", "admin-development"),
+      command: "migrate",
+    }),
+    /does not match DATABASE_IDENTITY/,
+  );
+  const wrongTable = await query("wrong_identity", "SELECT to_regclass('public.kept') AS name");
+  assert.equal(wrongTable.rows[0].name, null);
+
+  createDatabase("missing_identity");
+  await assert.rejects(
+    () => runDatabaseCommand({
+      application: "admin",
+      migrationsFolder: folder,
+      env: envFor("missing_identity", "admin", "admin-development"),
+      command: "migrate",
+    }),
+    /no identity record/,
+  );
+  const missingTable = await query("missing_identity", "SELECT to_regclass('public.kept') AS name");
+  const missingHistory = await query("missing_identity", "SELECT to_regclass('drizzle.__drizzle_migrations') AS name");
+  assert.equal(missingTable.rows[0].name, null);
+  assert.equal(missingHistory.rows[0].name, null);
+
+  await assert.rejects(
+    () => claim("admin_development", "admin", "admin-production"),
+    /does not match DATABASE_IDENTITY/,
+  );
+  const stillDevelopment = await query("admin_development", "SELECT identity FROM drizzle.database_identity");
+  assert.equal(stillDevelopment.rows[0].identity, "admin-development");
+});
+
+test("the runtime URL must show the same stored identity", async () => {
+  const otherDir = mkdtempSync(path.join(tmpdir(), "saas-migrate-"));
+  const otherPort = await freePort();
+  execFileSync("initdb", ["-D", otherDir, "-U", "postgres", "--auth=trust", "--no-sync"], { stdio: "ignore" });
+  const other = spawn(
+    "postgres",
+    ["-D", otherDir, "-p", String(otherPort), "-c", "listen_addresses=127.0.0.1", "-c", "unix_socket_directories="],
+    { stdio: "ignore" },
+  );
+  try {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        execFileSync("pg_isready", ["-h", "127.0.0.1", "-p", String(otherPort)], { stdio: "ignore" });
+        break;
+      } catch (error) {
+        if (attempt === 49) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    execFileSync("createdb", ["-h", "127.0.0.1", "-p", String(port), "-U", "postgres", "shared_name"], { stdio: "ignore" });
+    execFileSync("createdb", ["-h", "127.0.0.1", "-p", String(otherPort), "-U", "postgres", "shared_name"], { stdio: "ignore" });
+    await claim("shared_name", "admin", "admin-production");
+    const folder = mkdtempSync(path.join(tmpdir(), "saas-journal-"));
+    writeMigration(folder, "0000_create", 10, "CREATE TABLE kept (id integer PRIMARY KEY);\n");
+    const env = envFor("shared_name", "admin", "admin-production");
+    env.DATABASE_URL = `postgresql://postgres@127.0.0.1:${otherPort}/shared_name`;
+    await assert.rejects(
+      () => runDatabaseCommand({
+        application: "admin",
+        migrationsFolder: folder,
+        env,
+        command: "migrate",
+      }),
+      /DATABASE_URL does not show the same database identity/,
+    );
+    const directTable = await query("shared_name", "SELECT to_regclass('public.kept') AS name");
+    assert.equal(directTable.rows[0].name, null);
+  } finally {
+    if (other.exitCode === null) {
+      other.kill("SIGTERM");
+      await new Promise((resolve) => {
+        other.once("exit", resolve);
+        setTimeout(resolve, 2000);
+      });
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        rmSync(otherDir, { recursive: true, force: true });
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+  }
 });

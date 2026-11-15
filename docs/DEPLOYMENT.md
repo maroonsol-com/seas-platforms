@@ -46,7 +46,7 @@ If an install cannot see the workspace, override only the install command:
 cd .. && pnpm install --frozen-lockfile
 ```
 
-The build command stays `pnpm build`, run from the Root Directory.
+The build command stays `pnpm db:deploy`, run from the Root Directory.
 
 Each `next.config.ts` sets `outputFileTracingRoot` and `turbopack.root` to the monorepo root so shared source outside the application directory is included.
 
@@ -61,7 +61,7 @@ APP_DATABASE_TARGET=admin
 DATABASE_URL=<Admin pooled Neon URL>
 DATABASE_URL_UNPOOLED=<Admin direct Neon URL>
 DATABASE_NAME=<database name from the Neon connection details>
-NEON_ENDPOINT_ID=<endpoint id from the direct host, without -pooler>
+DATABASE_IDENTITY=admin-production
 AUTH_SECRET=<unique Admin secret>
 APP_URL=https://admin.yourdomain.com
 CLINIC_APP_URL=https://clinic.yourdomain.com
@@ -81,7 +81,7 @@ APP_DATABASE_TARGET=clinic
 DATABASE_URL=<Clinic pooled Neon URL>
 DATABASE_URL_UNPOOLED=<Clinic direct Neon URL>
 DATABASE_NAME=<database name from the Neon connection details>
-NEON_ENDPOINT_ID=<a different endpoint id from the Admin project>
+DATABASE_IDENTITY=clinic-production
 AUTH_SECRET=<unique Clinic secret>
 APP_URL=https://clinic.yourdomain.com
 CLINIC_PROVISIONING_SECRET=<same value as the Admin project>
@@ -94,7 +94,7 @@ SMTP_FROM=
 ENABLE_EXPERIMENTAL_COREPACK=1
 ```
 
-`DATABASE_URL` is the pooled runtime connection. `DATABASE_URL_UNPOOLED` is the direct connection used by `db:migrate` and `db:deploy`. The deploy command does not fall back to the pooled URL. `DATABASE_NAME` and `NEON_ENDPOINT_ID` are the non-secret identity checks described in `docs/DATABASE_MIGRATIONS.md`. They are not set in the local files yet. Do not put either connection string in a `NEXT_PUBLIC_` variable.
+`DATABASE_URL` is the pooled runtime connection. `DATABASE_URL_UNPOOLED` is the direct connection used by `db:migrate` and `db:deploy`. The deploy command does not fall back to the pooled URL. `DATABASE_NAME` checks the PostgreSQL name. `DATABASE_IDENTITY` is the separate identity recorded in the database. The four values are `admin-development`, `admin-production`, `clinic-development`, and `clinic-production`. See `docs/DATABASE_MIGRATIONS.md`. Do not put either connection string in a `NEXT_PUBLIC_` variable.
 
 `APP_URL` is the public origin for logout redirects, OTP mail that names the sign-in page, and the administrator invitation link. Cookie `Secure` is set when `NODE_ENV` is `production`, which Vercel sets. Session cookies are `HttpOnly` and `SameSite=Lax`.
 
@@ -142,7 +142,7 @@ pnpm --filter @saas/clinic-client db:deploy
 
 Admin deployment must not migrate the Clinic database, and the reverse is also true. Each command reads its own environment and refuses a target that does not match `APP_DATABASE_TARGET`. The full procedure, lock, and review rules are in `docs/DATABASE_MIGRATIONS.md`.
 
-Do not run `db:deploy` against the current Neon databases until `DATABASE_NAME` and `NEON_ENDPOINT_ID` are set and the pending-migration report has been approved. The local files do not have those identity variables yet.
+Do not run `db:deploy` against the current Neon databases until `DATABASE_IDENTITY` is set and `db:identify` has been run once on that database. Deploy does not create the identity row. The one-time commands, and which database each one targets, are in `docs/DATABASE_MIGRATIONS.md`. They have not been run.
 
 Applied histories:
 

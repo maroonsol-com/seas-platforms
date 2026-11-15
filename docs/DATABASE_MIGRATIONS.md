@@ -14,6 +14,7 @@ pnpm --filter @saas/admin db:generate
 pnpm --filter @saas/admin db:status
 pnpm --filter @saas/admin db:migrate
 pnpm --filter @saas/admin db:verify
+pnpm --filter @saas/admin db:identify
 pnpm --filter @saas/admin db:deploy
 
 pnpm --filter @saas/clinic-client db:check
@@ -21,6 +22,7 @@ pnpm --filter @saas/clinic-client db:generate
 pnpm --filter @saas/clinic-client db:status
 pnpm --filter @saas/clinic-client db:migrate
 pnpm --filter @saas/clinic-client db:verify
+pnpm --filter @saas/clinic-client db:identify
 pnpm --filter @saas/clinic-client db:deploy
 ```
 
@@ -28,9 +30,10 @@ pnpm --filter @saas/clinic-client db:deploy
 | --- | --- |
 | `db:check` | Confirms journal order and file hashes, then runs Drizzle Kit's schema check. It does not open a database. |
 | `db:generate` | Asks Drizzle Kit to write the next SQL file. Review that file before committing it. |
-| `db:status` | Read-only report of applied and pending tags, plus whether `platform_administrators` or `patients` is present. It does not apply SQL. |
+| `db:status` | Read-only report of applied and pending tags, whether `platform_administrators` or `patients` is present, and whether the database identity matches. It does not apply SQL and does not print the stored identity. |
 | `db:migrate` | Applies only pending migrations, then checks that the history matches the journal. |
-| `db:verify` | Fails if the history is inconsistent or any committed migration is still pending. |
+| `db:verify` | Fails if the identity is missing or mismatched, the history is inconsistent, or any committed migration is still pending. |
+| `db:identify` | Records the configured identity once. It does not run migration SQL. |
 | `db:deploy` | Runs `db:migrate` and, only after that succeeds, runs `next build`. |
 
 `db:push`, database reset, and `drizzle-kit push` are not deployment commands. Do not use them against a shared or production database.
@@ -83,13 +86,20 @@ Set these on the Vercel project and in the local application `.env`. The file wi
 | `DATABASE_URL` | Pooled runtime URL | Pooled runtime URL |
 | `DATABASE_URL_UNPOOLED` | Direct URL | Direct URL |
 | `DATABASE_NAME` | Database name from the Neon connection details | Database name from the Neon connection details |
-| `NEON_ENDPOINT_ID` | Endpoint id, such as `ep-example-id` | A different endpoint id |
+| `DATABASE_IDENTITY` | `admin-development` or `admin-production` | `clinic-development` or `clinic-production` |
 
-`DATABASE_URL_UNPOOLED` is required. The runner does not fall back to `DATABASE_URL`.
+`DATABASE_URL_UNPOOLED` is required. The runner does not fall back to `DATABASE_URL`. A direct URL whose host contains `-pooler` is rejected before a connection is opened.
 
-`DATABASE_NAME` and `NEON_ENDPOINT_ID` are not secrets. In the Neon console, open the connection string. The host looks like `ep-example-id.region.aws.neon.tech` or `ep-example-id-pooler.region.aws.neon.tech`. `NEON_ENDPOINT_ID` is the first host label with `-pooler` removed. `DATABASE_NAME` is the database path, often `neondb`. Both applications can use the same database name only when their endpoint ids differ. The runner also refuses a database that already contains the other application's tables: `patients` for Admin, `platform_administrators` for Clinic.
+`DATABASE_NAME` is not a secret, and it is not enough to identify the database. Admin and Clinic can use the same PostgreSQL database name on different Neon branches. `DATABASE_IDENTITY` is the explicit identity. It must be one of these four values, and the prefix must match the application:
 
-A local disposable database uses `NEON_ENDPOINT_ID=local` and a `127.0.0.1` or `localhost` host. `local` is rejected for a Neon host.
+| Environment | `APP_DATABASE_TARGET` | `DATABASE_IDENTITY` |
+| --- | --- | --- |
+| Admin development | `admin` | `admin-development` |
+| Admin production | `admin` | `admin-production` |
+| Clinic development | `clinic` | `clinic-development` |
+| Clinic production | `clinic` | `clinic-production` |
+
+The runner also refuses a database that already contains the other application's tables: `patients` for Admin, `platform_administrators` for Clinic.
 
 `MIGRATION_APPROVED_TAGS` is optional. It is a comma-separated list of journal tags that a person has reviewed. It is not a blanket approval.
 
@@ -98,14 +108,52 @@ A local disposable database uses `NEON_ENDPOINT_ID=local` and a `127.0.0.1` or `
 Before any migration SQL runs, the runner:
 
 1. Requires `APP_DATABASE_TARGET` to match the application that owns the command.
-2. Parses both URLs and requires the same database name and the same endpoint id.
-3. Rejects a direct URL whose host contains `-pooler`.
-4. Requires `DATABASE_NAME` and `NEON_ENDPOINT_ID` to match that parsed identity.
+2. Requires `DATABASE_IDENTITY` to be one of the two values allowed for that application.
+3. Requires `DATABASE_NAME` to match the database name in both URLs.
+4. Rejects a direct URL whose host contains `-pooler`.
 5. After connecting, requires `current_database()` to match `DATABASE_NAME`.
 6. Rejects Admin when `public.patients` exists, and Clinic when `public.platform_administrators` exists.
-7. Rejects a history whose hashes belong to the other application's journal.
+7. Reads the single row in `drizzle.database_identity` through `DATABASE_URL_UNPOOLED`. A missing row stops the command. A different stored value stops the command. The runner does not insert this row during `db:migrate`, `db:verify`, `db:status`, or `db:deploy`.
+8. Reads that same row through `DATABASE_URL`. If the runtime URL does not show the same identity, the command stops. This is what distinguishes two databases that share a name.
+9. Rejects a history whose hashes belong to the other application's journal.
 
-The full connection string is not printed. A mismatch says which check failed.
+The full connection string is not printed, and the stored identity value is not printed. A mismatch says which check failed. `db:status` reports the identity as `not configured`, `missing`, `matches`, or `mismatch`.
+
+## One-time identity setup
+
+Each existing database needs one explicit `db:identify` before the next migration. The command creates `drizzle.database_identity` and inserts the configured value when that row is absent. If the row is already present and different, it stops and does not change it. It does not apply migration SQL.
+
+`DATABASE_IDENTITY_CONFIRM` is required only for `db:identify`, and it must be exactly the same string as `DATABASE_IDENTITY`.
+
+The local `.env` wins over the shell. A development command therefore targets the database selected by that application's `.env`. These commands have not been run:
+
+Admin development, from the repository root, after `admin/.env` contains `DATABASE_IDENTITY=admin-development` and `DATABASE_IDENTITY_CONFIRM=admin-development`. This targets the database selected by `DATABASE_URL_UNPOOLED` in `admin/.env`:
+
+```bash
+pnpm --filter @saas/admin db:identify
+```
+
+Clinic development, after `clinic-client/.env` contains `DATABASE_IDENTITY=clinic-development` and `DATABASE_IDENTITY_CONFIRM=clinic-development`. This targets the database selected by `DATABASE_URL_UNPOOLED` in `clinic-client/.env`:
+
+```bash
+pnpm --filter @saas/clinic-client db:identify
+```
+
+Production must not be claimed by editing the development `.env`. Put the production values in a gitignored file and pass it explicitly. The file is the only environment used for that command. It must contain `APP_DATABASE_TARGET`, `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `DATABASE_NAME`, `DATABASE_IDENTITY`, and `DATABASE_IDENTITY_CONFIRM`.
+
+Admin production, targeting the database selected by `DATABASE_URL_UNPOOLED` in `admin/.env.production.local`. Use `DATABASE_IDENTITY=admin-production` and the same value for `DATABASE_IDENTITY_CONFIRM`:
+
+```bash
+MIGRATION_ENV_FILE=.env.production.local pnpm --filter @saas/admin db:identify
+```
+
+Clinic production, targeting the database selected by `DATABASE_URL_UNPOOLED` in `clinic-client/.env.production.local`. Use `DATABASE_IDENTITY=clinic-production` and the same value for `DATABASE_IDENTITY_CONFIRM`:
+
+```bash
+MIGRATION_ENV_FILE=.env.production.local pnpm --filter @saas/clinic-client db:identify
+```
+
+Do not run those commands until the direct URL in that file has been confirmed. `db:deploy` will fail on a database that has no identity row. It will not create one.
 
 ## What runs automatically
 

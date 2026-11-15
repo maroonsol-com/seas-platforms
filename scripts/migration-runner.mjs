@@ -6,10 +6,6 @@ import { pathToFileURL } from "node:url";
 
 export const LOCK_NAMESPACE = 81422011;
 export const LOCK_KEYS = { admin: 1, clinic: 2 };
-export const DATABASE_IDENTITIES = {
-  admin: ["admin-development", "admin-production"],
-  clinic: ["clinic-development", "clinic-production"],
-};
 
 const APPLICATIONS = {
   admin: {
@@ -76,18 +72,6 @@ export function connectionIdentity(connectionString) {
   };
 }
 
-export function expectedDatabaseIdentity(application, env) {
-  const identity = env.DATABASE_IDENTITY?.trim() ?? "";
-  const allowed = DATABASE_IDENTITIES[application];
-  if (!identity) {
-    throw new Error("DATABASE_IDENTITY is missing. Set it to admin-development, admin-production, clinic-development, or clinic-production. No migration was applied.");
-  }
-  if (!allowed?.includes(identity)) {
-    throw new Error(`DATABASE_IDENTITY is not valid for the ${application} application. No migration was applied.`);
-  }
-  return identity;
-}
-
 export function stripRoutineBodies(sql) {
   return sql.replace(/\$[A-Za-z0-9_]*\$[\s\S]*?\$[A-Za-z0-9_]*\$/g, " ");
 }
@@ -127,6 +111,21 @@ export function notNullAdditions(sql) {
     if (/\bNOT\s+NULL\b/i.test(clause) && !/\bDEFAULT\b/i.test(clause)) {
       tables.push(match[1] ?? match[2]);
     }
+  }
+  return tables;
+}
+
+export function existingConstraintTables(sql) {
+  const outside = stripRoutineBodies(sql);
+  const created = new Set(
+    [...outside.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([A-Za-z_][\w]*))/gi)].map(
+      (match) => match[1] ?? match[2],
+    ),
+  );
+  const tables = [];
+  for (const match of outside.matchAll(/ALTER\s+TABLE\s+(?:"([^"]+)"|([A-Za-z_][\w]*))\s+ADD\s+CONSTRAINT\b/gi)) {
+    const table = match[1] ?? match[2];
+    if (!created.has(table)) tables.push(table);
   }
   return tables;
 }
@@ -188,15 +187,6 @@ function statementsOf(sql) {
     .filter((statement) => statement.length > 0);
 }
 
-function approvedTags(env) {
-  return new Set(
-    (env.MIGRATION_APPROVED_TAGS ?? "")
-      .split(",")
-      .map((tag) => tag.trim())
-      .filter(Boolean),
-  );
-}
-
 function requireUrl(env, name) {
   const value = env[name]?.trim() ?? "";
   if (!value) {
@@ -209,17 +199,16 @@ function requireUrl(env, name) {
 }
 
 export function assertConnectionPair(env) {
+  if (env.VERCEL_ENV === "preview" && (!env.DATABASE_URL?.trim() || !env.DATABASE_URL_UNPOOLED?.trim())) {
+    throw new Error("This Preview deployment is missing DATABASE_URL or DATABASE_URL_UNPOOLED. Preview must use its own database URLs and will not open a production connection.");
+  }
   const runtime = connectionIdentity(requireUrl(env, "DATABASE_URL"));
   const direct = connectionIdentity(requireUrl(env, "DATABASE_URL_UNPOOLED"));
   if (direct.pooled) {
     throw new Error("DATABASE_URL_UNPOOLED points at a Neon pooler host. Migrations require the direct connection. No database connection was opened.");
   }
-  const expectedName = env.DATABASE_NAME?.trim() ?? "";
-  if (!expectedName) {
-    throw new Error("DATABASE_NAME is missing. No migration was applied.");
-  }
-  if (runtime.databaseName !== expectedName || direct.databaseName !== expectedName) {
-    throw new Error("DATABASE_NAME does not match the database in DATABASE_URL and DATABASE_URL_UNPOOLED. No migration was applied.");
+  if (runtime.databaseName !== direct.databaseName) {
+    throw new Error("DATABASE_URL and DATABASE_URL_UNPOOLED name different databases. No database connection was opened.");
   }
   return direct;
 }
@@ -245,37 +234,15 @@ function historyVerdict(journal, rows, foreignHashes) {
   };
 }
 
-async function storedIdentity(client) {
-  const present = await client.query(
-    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'drizzle' AND table_name = 'database_identity') AS present",
-  );
-  if (!present.rows[0].present) return null;
-  const rows = await client.query("SELECT identity FROM drizzle.database_identity");
-  if (rows.rows.length !== 1) return null;
-  return rows.rows[0].identity;
-}
-
-async function identityVisibleTo(connectionString) {
-  const { default: pg } = await import("pg");
-  const pool = new pg.Pool({ connectionString, max: 1, application_name: "saas-identity-check" });
-  const client = await pool.connect();
-  try {
-    await client.query("SET default_transaction_read_only = on");
-    return await storedIdentity(client);
-  } finally {
-    client.release();
-    await pool.end();
-  }
-}
-
-async function recordIdentity(client, identity) {
-  await client.query("CREATE SCHEMA IF NOT EXISTS drizzle");
-  await client.query(`CREATE TABLE IF NOT EXISTS drizzle.database_identity (
-    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
-    identity text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
-  )`);
-  await client.query("INSERT INTO drizzle.database_identity (identity) VALUES ($1)", [identity]);
+async function publicTables(client) {
+  const result = await client.query(`
+    SELECT c.relname AS name
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind = 'r'
+    ORDER BY c.relname
+  `);
+  return result.rows.map((row) => row.name);
 }
 
 async function readHistory(client) {
@@ -329,9 +296,9 @@ export async function runDatabaseCommand(options) {
   if (env.APP_DATABASE_TARGET !== application.target) {
     throw new Error(`APP_DATABASE_TARGET must be "${application.target}". Refusing to use another application's database. No database connection was opened.`);
   }
-  const journal = options.command === "identify" ? [] : readJournal(options.migrationsFolder);
+  const journal = readJournal(options.migrationsFolder);
   const foreignHashes = new Set(
-    options.command !== "identify" && options.foreignMigrationsFolder && existsSync(options.foreignMigrationsFolder)
+    options.foreignMigrationsFolder && existsSync(options.foreignMigrationsFolder)
       ? readJournal(options.foreignMigrationsFolder).map((entry) => entry.hash)
       : [],
   );
@@ -342,20 +309,7 @@ export async function runDatabaseCommand(options) {
     return { ok: true, journal: journal.map((entry) => entry.tag), risky };
   }
 
-  let identityError = "";
-  let expectedIdentity = "";
-  try {
-    assertConnectionPair(env);
-    expectedIdentity = expectedDatabaseIdentity(application.label, env);
-    if (options.command === "identify" && env.DATABASE_IDENTITY_CONFIRM !== expectedIdentity) {
-      throw new Error("DATABASE_IDENTITY_CONFIRM must exactly match DATABASE_IDENTITY. No identity was recorded.");
-    }
-  } catch (error) {
-    identityError = error instanceof Error ? error.message : String(error);
-    if (options.command !== "status") throw error;
-  }
-  requireUrl(env, "DATABASE_URL_UNPOOLED");
-  const direct = connectionIdentity(env.DATABASE_URL_UNPOOLED);
+  const direct = assertConnectionPair(env);
   if (direct.pooled) {
     throw new Error("DATABASE_URL_UNPOOLED points at a Neon pooler host. Migrations require the direct connection. No database connection was opened.");
   }
@@ -373,66 +327,44 @@ export async function runDatabaseCommand(options) {
       await client.query("SELECT pg_advisory_lock($1, $2)", [LOCK_NAMESPACE, LOCK_KEYS[application.label]]);
       locked = true;
     }
-    if (options.command !== "migrate" && options.command !== "identify") {
+    if (options.command !== "migrate") {
       await client.query("SET default_transaction_read_only = on");
     }
     const identity = await client.query("SELECT current_database() AS name, current_setting('server_version_num') AS version");
     const nameMatchesUrl = identity.rows[0].name === direct.databaseName;
-    const nameMatchesConfig = Boolean(env.DATABASE_NAME?.trim()) && identity.rows[0].name === env.DATABASE_NAME.trim();
+    const nameError = nameMatchesUrl
+      ? ""
+      : "The connected database does not match the database named by DATABASE_URL_UNPOOLED. No migration was applied.";
     const relations = await client.query(
       "SELECT to_regclass('public.platform_administrators') IS NOT NULL AS administrators, to_regclass('public.patients') IS NOT NULL AS patients",
     );
-    if (!identityError && !nameMatchesConfig) {
-      identityError = "The connected database name does not match DATABASE_NAME. No migration was applied.";
-    }
     const foreignPresent = relations.rows[0][application.foreignRelation === "public.patients" ? "patients" : "administrators"];
-    const storedIdentityValue = identityError ? null : await storedIdentity(client);
-    let runtimeIdentityValue = null;
-    if (!identityError && storedIdentityValue) {
-      runtimeIdentityValue = await identityVisibleTo(env.DATABASE_URL);
-    }
-    const identityMatches = Boolean(expectedIdentity) && storedIdentityValue === expectedIdentity && runtimeIdentityValue === expectedIdentity;
-    if (!identityError && !identityMatches) {
-      if (!storedIdentityValue) {
-        identityError = "This database has no identity record. Run db:identify once after setting DATABASE_IDENTITY and DATABASE_IDENTITY_CONFIRM to the same value. No migration was applied.";
-      } else if (storedIdentityValue !== expectedIdentity) {
-        identityError = "The identity stored in this database does not match DATABASE_IDENTITY. No migration was applied.";
-      } else {
-        identityError = "DATABASE_URL does not show the same database identity as DATABASE_URL_UNPOOLED. No migration was applied.";
-      }
-    }
+    const rowsBeforeEnsure = await readHistory(client);
+    const existingTables = rowsBeforeEnsure.length === 0 ? await publicTables(client) : [];
+    const baselineError = existingTables.length > 0
+      ? `This database already has application tables (${existingTables.join(", ")}) but no Drizzle migration history. Initial migrations were not applied.`
+      : "";
+    if (nameError && options.command !== "status") throw new Error(nameError);
     if (foreignPresent && options.command !== "status") {
-      const suffix = options.command === "identify" ? "No identity was recorded." : "No migration was applied.";
-      throw new Error(`This database contains ${application.foreignRelation}, which belongs to the other application. ${suffix}`);
+      throw new Error(`This database contains ${application.foreignRelation}, which belongs to the other application. No migration was applied.`);
     }
-    if (options.command === "identify") {
-      if (identityError && !identityError.startsWith("This database has no identity record")) throw new Error(identityError);
-      if (!storedIdentityValue) {
-        await recordIdentity(client, expectedIdentity);
-        if (await identityVisibleTo(env.DATABASE_URL) !== expectedIdentity) {
-          throw new Error("DATABASE_URL does not show the identity recorded through DATABASE_URL_UNPOOLED. The direct database now has the identity. Point both URLs at that database before migrating.");
-        }
-      }
-      return { ok: true, identity: "matches" };
-    }
-    if (identityError && options.command !== "status") throw new Error(identityError);
+    if (baselineError && options.command !== "status") throw new Error(baselineError);
     if (options.command === "migrate") await ensureMigrationsTable(client);
-    const rows = await readHistory(client);
+    const rows = rowsBeforeEnsure;
     const verdict = historyVerdict(journal, rows, foreignHashes);
     const report = {
-      ok: !identityError && !foreignPresent && verdict.problems.length === 0 && (options.command !== "verify" || verdict.pending.length === 0),
-      identity: !expectedIdentity ? "not configured" : !storedIdentityValue ? "missing" : identityMatches ? "matches" : "mismatch",
+      ok: !nameError && !baselineError && !foreignPresent && verdict.problems.length === 0 && (options.command !== "verify" || verdict.pending.length === 0),
       applied: rows.map((row) => journal.find((entry) => entry.hash === row.hash)?.tag ?? "unrecognized"),
       pending: verdict.problems.length === 0 ? verdict.pending.map((entry) => entry.tag) : [],
       problems: [
         ...verdict.problems,
-        ...(identityError ? [identityError] : []),
+        ...(nameError ? [nameError] : []),
+        ...(baselineError ? [baselineError] : []),
         ...(foreignPresent ? [`This database contains ${application.foreignRelation}, which belongs to the other application. No migration was applied.`] : []),
       ],
       administrators: relations.rows[0].administrators,
       patients: relations.rows[0].patients,
       nameMatchesUrl,
-      nameMatchesConfig,
     };
     if (foreignPresent && options.command !== "status") {
       throw Object.assign(new Error(report.problems.at(-1)), { report });
@@ -442,24 +374,33 @@ export async function runDatabaseCommand(options) {
       return report;
     }
     if (verdict.problems.length > 0) throw new Error(verdict.problems.join(" "));
-    if (identityError) throw new Error(identityError);
     if (options.command === "verify" && verdict.pending.length > 0) {
       throw new Error(`Pending migrations: ${verdict.pending.map((entry) => entry.tag).join(", ")}.`);
     }
     if (options.command === "migrate") {
-      const approved = approvedTags(env);
       const version = Number(identity.rows[0].version);
       for (const entry of verdict.pending) {
         const risks = [...migrationRisks(entry.sql)];
-        for (const table of new Set(notNullAdditions(entry.sql))) {
+        for (const table of new Set([...notNullAdditions(entry.sql), ...existingConstraintTables(entry.sql)])) {
           if (!/^[A-Za-z_][\w]*$/.test(table)) {
-            throw new Error(`${entry.tag} has an unsupported table name. Nothing further was applied.`);
+            throw new Error(`${entry.tag}.sql has an unsupported table name. Nothing further was applied.`);
           }
+          const present = await client.query("SELECT to_regclass($1) AS name", [`public.${table}`]);
+          if (!present.rows[0].name) continue;
           const count = await client.query(`SELECT count(*)::int AS count FROM "${table}"`);
-          if (count.rows[0].count > 0) risks.push(`NOT NULL column without a default on ${table}, which already has rows`);
+          if (count.rows[0].count === 0) continue;
+          if (notNullAdditions(entry.sql).includes(table)) {
+            risks.push(`NOT NULL column without a default on ${table}, which already has rows`);
+          }
+          if (existingConstraintTables(entry.sql).includes(table)) {
+            risks.push(`new constraint on ${table}, which already has rows`);
+          }
         }
-        if (risks.length > 0 && !approved.has(entry.tag)) {
-          throw new Error(`${entry.tag} requires review before it can run (${risks.join(", ")}). Set MIGRATION_APPROVED_TAGS to that tag after reviewing the SQL. Nothing further was applied.`);
+        if (risks.length > 0) {
+          const statement = statementsOf(entry.sql).find((item) => (
+            migrationRisks(item).length > 0 || /\bADD\s+CONSTRAINT\b/i.test(item) || /\bNOT\s+NULL\b/i.test(item)
+          )) ?? entry.sql.trim();
+          throw new Error(`${entry.tag}.sql requires review (${risks.join(", ")}). Statement: ${statement} The migration was not applied.`);
         }
         await applyEntry(client, entry, version);
       }
@@ -499,9 +440,9 @@ export async function runDeploy(options) {
 
 export async function executeCli(options) {
   const command = options.argv[0];
-  const allowed = new Set(["check", "status", "verify", "migrate", "identify", "deploy"]);
+  const allowed = new Set(["check", "status", "verify", "migrate", "deploy"]);
   if (!allowed.has(command)) {
-    console.error("Usage: node scripts/database.mjs <check|status|verify|migrate|identify|deploy>");
+    console.error("Usage: node scripts/database.mjs <check|status|verify|migrate|deploy>");
     return 1;
   }
   const env = loadCommandEnv(options.appRoot);
@@ -519,8 +460,6 @@ export async function executeCli(options) {
         printStatus(options.application, result);
       } else if (command === "verify") {
         console.log(`${options.application}: migration history matches the journal.`);
-      } else if (command === "identify") {
-        console.log(`${options.application}: database identity recorded.`);
       } else {
         console.log(`${options.application}: migrations applied and verified.`);
       }
@@ -540,8 +479,6 @@ function printStatus(application, result) {
   console.log(`platform_administrators: ${result.administrators ? "present" : "absent"}`);
   console.log(`patients: ${result.patients ? "present" : "absent"}`);
   console.log(`database name matches connection: ${result.nameMatchesUrl ? "yes" : "no"}`);
-  console.log(`database name matches DATABASE_NAME: ${result.nameMatchesConfig ? "yes" : "no"}`);
-  console.log(`database identity: ${result.identity}`);
   console.log(`applied: ${result.applied.join(", ") || "none"}`);
   console.log(`pending: ${result.pending.join(", ") || "none"}`);
 }

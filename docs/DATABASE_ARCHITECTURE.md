@@ -14,7 +14,7 @@ The variable names match on purpose. Each application's `.env`, and later each V
 - Runtime reads use `@neondatabase/serverless` through Drizzle's Neon HTTP driver and `DATABASE_URL`.
 - The configured runtime URLs are Neon **pooled** URLs. The HTTP driver can use them safely because each query is a short request and does not hold a Postgres session.
 - Clinic tenant reads and writes use Drizzle's Neon WebSocket driver inside `withTenantTransaction()` or `withUserTransaction()`. That pool also uses `DATABASE_URL`. Its client cap is 5 when the URL is pooled and 2 when it is a direct URL, so a direct URL cannot exhaust the Neon compute connection limit. Idle clients close after 10 seconds.
-- `DATABASE_URL_UNPOOLED` is the direct Neon URL used by the migration runner. It does not fall back to the pooled URL. A host containing `-pooler` is rejected. `DATABASE_NAME` must match `current_database()`, and `DATABASE_IDENTITY` must match the row in `drizzle.database_identity` on both the direct URL and the runtime URL. The original `DATABASE_URL` values were not overwritten.
+- `DATABASE_URL_UNPOOLED` is the direct Neon URL used by the migration runner. It does not fall back to the pooled URL. A host containing `-pooler` is rejected. `current_database()` must match the database name in that URL. The original `DATABASE_URL` values were not overwritten.
 - A direct URL can also serve the HTTP driver. Do not point an uncapped pool at a direct Neon host.
 - Drizzle Kit rejects a host that contains `-pooler`.
 - `db:generate` and `db:check` do not open a connection. When the direct URL is still a placeholder, they receive a non-routable local URL only so Drizzle Kit can load its config. That URL is not written into SQL.
@@ -36,7 +36,7 @@ pnpm --filter @saas/clinic-client db:migrate
 pnpm db:boundaries
 ```
 
-`db:generate` writes SQL into that application's `drizzle/` directory. `db:check` checks journal order and then compares the Drizzle schema with the latest snapshot. `db:identify` records that database's identity once and does not migrate. `db:migrate` applies that application's pending files only after the stored identity matches. `db:deploy` does that and then builds the application. `pnpm db:boundaries` reads both SQL histories and fails if one contains the other application's tables, a float money type, or a connection string. Details are in `docs/DATABASE_MIGRATIONS.md`.
+`db:generate` writes SQL into that application's `drizzle/` directory. `db:check` checks journal order and then compares the Drizzle schema with the latest snapshot. `db:migrate` applies that application's pending files only. `db:deploy` does that and then builds the application. `pnpm db:boundaries` reads both SQL histories and fails if one contains the other application's tables, a float money type, or a connection string. Details are in `docs/DATABASE_MIGRATIONS.md`.
 
 A custom migration is generated with the same wrapper, which strips the extra `--` pnpm inserts:
 
